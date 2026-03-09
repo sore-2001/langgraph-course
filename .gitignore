@@ -117,3 +117,20 @@ venv.bak/
 
 # Windows
 Thumbs.db
+
+# Virtual environments
+langgraph_env/
+.venv/
+venv/
+
+# Large data files
+*.JPG
+geology_triples_test.json
+data/gouli_pdf/
+data/gouli_map/
+data/gouli_txt/
+data/maowan/
+data/text_one/
+
+# Logs
+logs/

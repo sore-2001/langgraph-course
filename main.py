@@ -1,9 +1,13 @@
-from dotenv import load_dotenv
+from openai import OpenAI
 
-load_dotenv()
+client = OpenAI(
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key="sk-75c3f2f7542747448bc862040b119296"
+)
 
-from graph.graph import app
+response = client.chat.completions.create(
+    model="qwen3.5-flash",
+    messages=[{"role": "user", "content": "Hello，who are you "}]
+)
 
-if __name__ == "__main__":
-    print("Hello Advanced RAG")
-    print(app.invoke(input={"question": "agent memory?"}))
+print(response.choices[0].message.content)
