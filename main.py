@@ -1,13 +1,13 @@
-from openai import OpenAI
+"""
+Geological Mapping Agent - Main Entry Point
 
-client = OpenAI(
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    api_key="sk-75c3f2f7542747448bc862040b119296"
-)
+This is the main entry point for running the geological mapping agent.
 
-response = client.chat.completions.create(
-    model="qwen3.5-flash",
-    messages=[{"role": "user", "content": "Hello，who are you "}]
-)
+Usage:
+    python main.py                  # Interactive mode
+    python -m agent.agent           # Alternative way to run
+"""
+from agent.agent import main
 
-print(response.choices[0].message.content)
+if __name__ == "__main__":
+    main()

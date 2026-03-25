@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"D:\\\\项目数据\\\\毕业流程\\\\大论文\\\\langgraph-course\" && uv run python -c \"import sys; print\\(f'Python: {sys.version}'\\); import llama_index; print\\(f'LlamaIndex: {llama_index.__version__}'\\); import cv2; print\\(f'OpenCV: {cv2.__version__}'\\); import pandas; print\\(f'Pandas: {pandas.__version__}'\\)\")",
+      "Bash(cd \"D:\\\\项目数据\\\\毕业流程\\\\大论文\\\\langgraph-course\" && uv run python -c \"import sys; print\\(f'Python: {sys.version}'\\); import llama_index.core; print\\('LlamaIndex: OK'\\); import cv2; print\\(f'OpenCV: {cv2.__version__}'\\); import pandas; print\\(f'Pandas: {pandas.__version__}'\\); import transformers; print\\(f'Transformers: {transformers.__version__}'\\)\")",
+      "Bash(cd \"D:\\\\项目数据\\\\毕业流程\\\\大论文\\\\langgraph-course\" && python PEACE/modules/HIE.py)",
+      "Bash(cd \"D:\\\\项目数据\\\\毕业流程\\\\大论文\\\\langgraph-course\" && python PEACE/modules/HIE.py 2>&1)",
+      "Bash(cd \"D:\\\\项目数据\\\\毕业流程\\\\大论文\\\\langgraph-course\" && rm -f PEACE/dependencies/knowledge/k2_*.json 2>&1)",
+      "Bash(cd \"D:\\\\项目数据\\\\毕业流程\\\\大论文\\\\langgraph-course\" && python -c \"from PEACE.modules.HIE import hierarchical_information_extraction; print\\('Import successful'\\)\")",
+      "Bash(python data_process/main.py)",
+      "WebFetch(domain:docs.llamaindex.ai)",
+      "WebSearch",
+      "WebFetch(domain:developers.llamaindex.ai)",
+      "Bash(D:项目数据毕业流程大论文langgraph-course.venvScriptspip install:*)",
+      "Bash(uv pip:*)",
+      "Bash(python:*)"
+    ]
+  }
+}

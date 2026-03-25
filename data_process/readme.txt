@@ -8,7 +8,7 @@ your_project/
 │   ├── config.py          # 配置文件（LLM/Neo4j/路径等参数）
 │   └── utils.py           # 通用工具函数（校验、日志、格式转换）
 ├── geology_data/          # 地质PDF文件目录（存放你的找矿论文PDF）
-│   └── 大模型驱动的东天山-北山找矿知识图谱构建及应用_田苗.pdf
+│   └── 大模型驱动的东天山-北山找矿知识图谱构建及应用.pdf
 ├── chroma_db/             # 可选：向量数据库缓存目录
 └── main.py                # 主执行文件（调用data_process中的模块）
 
