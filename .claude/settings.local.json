@@ -13,7 +13,29 @@
       "WebFetch(domain:developers.llamaindex.ai)",
       "Bash(D:项目数据毕业流程大论文langgraph-course.venvScriptspip install:*)",
       "Bash(uv pip:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(source .venv/Scripts/activate)",
+      "Bash(pip list:*)",
+      "Bash(.venv/Scripts/python.exe run_incremental.py --init --pdf-dir ./data/chuankou_pdf)",
+      "WebFetch(domain:github.com)",
+      "Bash(where git:*)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin install web-access@web-access --scope user)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin marketplace add https://github.com/tanweai/pua)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin install pua-skills@pua-skills --scope user)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin install pua@pua --scope user)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin marketplace refresh)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin marketplace list)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin install pua-skills@pua --scope user)",
+      "Bash(pip install:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude plugin install pua@pua-skills --scope user)",
+      "Bash(..venvScriptspip install:*)",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(python -c \":*)",
+      "Bash(tee extracted_text.txt)",
+      "Bash(claude:*)",
+      "Bash(npm list:*)",
+      "Bash(CLAUDE_CODE_GIT_BASH_PATH=\"D:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe\" claude update)"
     ]
   }
 }

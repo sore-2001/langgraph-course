@@ -9,6 +9,9 @@
 """
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
@@ -184,8 +187,21 @@ class IncrementalGraphBuilder:
         """
         logger.info(f"处理文档：{file_path}")
 
-        # 加载 PDF
-        nodes = load_geology_pdfs(Path(file_path).parent, pattern=Path(file_path).name)
+        # 加载 PDF - 创建一个临时目录只包含当前文件
+        import shutil
+        import tempfile
+
+        # 创建一个临时目录，复制当前 PDF 到该目录
+        temp_dir = tempfile.mkdtemp()
+        temp_pdf_path = os.path.join(temp_dir, os.path.basename(file_path))
+        shutil.copy2(file_path, temp_pdf_path)
+
+        try:
+            nodes = load_geology_pdfs(temp_dir)
+        finally:
+            # 清理临时目录
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
         if not nodes:
             logger.warning(f"文档未加载到文本块：{file_path}")
             return [], [], {}

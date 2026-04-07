@@ -20,6 +20,20 @@ if _peace_path not in sys.path:
 
 from typing import Optional, Dict, Any
 
+# Cache for rock knowledge databases (loaded once, reused across calls)
+_rock_type_db = None
+_rock_age_db = None
+
+
+def _get_rock_dbs():
+    """Lazy load rock knowledge databases with caching."""
+    global _rock_type_db, _rock_age_db
+    if _rock_type_db is None or _rock_age_db is None:
+        from PEACE.tool_pool.rock_type_and_age_db import rock_type_and_age_db
+        _rock_type_db = rock_type_and_age_db("type")
+        _rock_age_db = rock_type_and_age_db("age")
+    return _rock_type_db, _rock_age_db
+
 
 def analyze_geological_map(
     image_path: str,
@@ -96,7 +110,8 @@ def analyze_geological_map(
 
 def get_rock_knowledge(rock_name: str) -> Dict[str, str]:
     """
-    Get geological knowledge about a rock type from PEACE knowledge base.
+    Get geological knowledge about a rock type from PEACE local knowledge base.
+    Uses cached JSON files instead of API calls for fast batch queries.
 
     Args:
         rock_name: Name of the rock/stratigraphic unit from map legend
@@ -108,29 +123,16 @@ def get_rock_knowledge(rock_name: str) -> Dict[str, str]:
             "rock_age": str,       # Stratigraphic age
         }
     """
-    try:
-        from PEACE.agents.geologist import geologist_agent
-        from PEACE.tool_pool import geological_knwoledge_type
-    except ImportError as e:
-        return {"error": f"PEACE module not available: {e}"}
-
-    agent = geologist_agent()
+    # Use cached database instances (lazy loaded)
+    rock_type_db, rock_age_db = _get_rock_dbs()
 
     result = {}
 
-    # Get rock type
-    rock_type_result = agent.get_knowledge(
-        geological_knwoledge_type.Rock_Type,
-        rock_name
-    )
-    result["rock_type"] = rock_type_result.get("rock_type", "unknown")
+    # Get rock type from local cache
+    result["rock_type"] = rock_type_db.get_rock_type_or_age(rock_name)
 
-    # Get rock age
-    rock_age_result = agent.get_knowledge(
-        geological_knwoledge_type.Rock_Age,
-        rock_name
-    )
-    result["rock_age"] = rock_age_result.get("rock_age", "unknown")
+    # Get rock age from local cache
+    result["rock_age"] = rock_age_db.get_rock_type_or_age(rock_name)
 
     return result
 
@@ -186,23 +188,70 @@ def peace_map_analyze(image_path: str, query: str = "analyze") -> str:
     The PEACE module uses MLLMs (Multimodal Large Language Models) to understand
     geological maps holistically.
 
+    缓存策略：
+    - 首次分析：调用 PEACE HIE 模块完整提取元数据
+    - 再次分析：通过图名匹配从 .cache/local_dataset/*/meta/ 直接返回缓存结果
+
     Args:
         image_path: Path to the geological map image
         query: Analysis query type:
             - "analyze": Full analysis (default)
             - "layout": Extract map layout only
             - "legend": Extract legend information
-            - "rock": Get rock type knowledge for legend entries
+            - "info": Extract basic information
 
     Returns:
         JSON-formatted string with analysis results
     """
     import json
+    from pathlib import Path
 
     try:
         if not os.path.exists(image_path):
             return json.dumps({"error": f"Image not found: {image_path}"}, ensure_ascii=False)
 
+        # 尝试从缓存加载元数据（图名匹配）
+        cache_root = Path(__file__).resolve().parent.parent.parent / ".cache" / "local_dataset"
+        map_name = Path(image_path).stem  # 不含扩展名的文件名
+
+        cached_meta = None
+        if cache_root.exists():
+            for meta_file in cache_root.rglob("meta/*.json"):
+                try:
+                    with open(meta_file, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                        cached_name = meta.get('name')
+                        # 精确匹配 或 前缀匹配（处理带 UUID 后缀的情况）
+                        # 如：输入"成矿预测图"，缓存"成矿预测图_3c9f927c" 也应命中
+                        if cached_name == map_name or (cached_name and cached_name.startswith(map_name + '_')):
+                            cached_meta = meta
+                            break
+                except Exception:
+                    continue
+
+        if cached_meta:
+            # 缓存命中，直接返回
+            if query == "layout":
+                result = {
+                    "name": cached_meta.get("name"),
+                    "size": cached_meta.get("size"),
+                    "regions": cached_meta.get("regions"),
+                }
+            elif query == "legend":
+                result = {
+                    "name": cached_meta.get("name"),
+                    "legend": cached_meta.get("legend"),
+                }
+            elif query == "info":
+                result = {
+                    "name": cached_meta.get("name"),
+                    "information": cached_meta.get("information"),
+                }
+            else:
+                result = cached_meta
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        # 缓存未命中，调用 PEACE HIE 模块分析
         if query == "layout":
             result = analyze_geological_map(image_path, extract_mode="layout")
         elif query == "legend":
@@ -215,4 +264,21 @@ def peace_map_analyze(image_path: str, query: str = "analyze") -> str:
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return json.dumps({"error": f"PEACE map analysis failed: {str(e)}"}, ensure_ascii=False)
+
+def peace_rock_knowledge(rock_name: str) -> str:
+    """
+    Get geological knowledge about a specific rock type from the PEACE local knowledge base.
+
+    Args:
+        rock_name: Name of the rock or stratigraphic unit (e.g., '第四系', '大理岩')
+
+    Returns:
+        JSON-formatted string containing rock type and age knowledge
+    """
+    import json
+    try:
+        result = get_rock_knowledge(rock_name)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Failed to get rock knowledge: {str(e)}"}, ensure_ascii=False)

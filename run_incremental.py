@@ -3,7 +3,7 @@
 
 使用说明:
     # 1. 首次全量构建
-    python run_incremental.py --init
+    python run_incremental.py --init --pdf-dir ./data/chuankou_pdf
 
     # 2. 增量更新 (自动检测新增/修改的文档)
     python run_incremental.py --update
@@ -20,6 +20,13 @@
 import sys
 import argparse
 from pathlib import Path
+
+# 设置 UTF-8 编码
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+# 确保项目根目录在搜索路径中
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from data_process.config import Config
 from data_process.incremental_builder import IncrementalGraphBuilder
@@ -59,11 +66,11 @@ def cmd_list(args):
     info = builder.get_registry_info()
 
     print(f"\n已追踪文档：{info['total_documents']} 个\n")
-    print(f"{'文件名':<40} {'文本块':>8} {'三元组':>10} {'处理时间':<25}")
-    print("-" * 85)
+    print(f"{'文件名':<50} {'文本块':>8} {'三元组':>10} {'处理时间':<25}")
+    print("-" * 95)
 
     for doc in info['documents']:
-        print(f"{doc['file']:<40} {doc['chunks']:>8} {doc['triples']:>10} {doc['processed_at'][:19]:<25}")
+        print(f"{doc['file']:<50} {doc['chunks']:>8} {doc['triples']:>10} {doc['processed_at'][:19]:<25}")
 
     print()
 
@@ -81,7 +88,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python run_incremental.py --init                          # 首次全量构建
+  python run_incremental.py --init --pdf-dir ./data/chuankou_pdf  # 首次全量构建
   python run_incremental.py --update                        # 增量更新
   python run_incremental.py --add file1.pdf file2.pdf       # 添加指定文档
   python run_incremental.py --list                          # 查看已处理文档
@@ -124,11 +131,6 @@ def main():
         type=str,
         default=Config.PDF_DIR,
         help=f'PDF 目录 (默认：{Config.PDF_DIR})'
-    )
-    parser.add_argument(
-        '--rebuild-communities',
-        action='store_true',
-        help='增量更新时是否重建社区结构'
     )
 
     args = parser.parse_args()

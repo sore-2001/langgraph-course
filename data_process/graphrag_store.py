@@ -2,25 +2,34 @@
 GraphRAG Store - 基于 LlamaIndex PropertyGraphIndex 的社区检测与摘要存储
 
 基于官方文档实现：https://developers.llamaindex.ai/python/examples/cookbooks/graphrag_v2/
+参考 Microsoft GraphRAG 的社区层次结构实现
 """
 import re
+import logging
 import networkx as nx
 from graspologic.partition import hierarchical_leiden
 from collections import defaultdict
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from llama_index.core.llms import ChatMessage
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 from llama_index.core import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class GraphRAGStore(Neo4jPropertyGraphStore):
     """
     扩展 Neo4jPropertyGraphStore，实现社区检测和摘要存储到 Neo4j
 
-    社区层次结构：
-    - Level 0: Community (基层社区)
-    - Level 1: Episodic (主题情节/子社区)
-    - Level 2: Saga (大型叙事/超级社区)
+    社区层次结构（基于 hierarchical_leiden 算法输出）：
+    - Level 0: 最粗糙的社区划分 → Saga (大型叙事/超级社区)
+    - Level 1: 对过大 Saga 的细分 → Episodic (主题情节/子社区)
+    - Level 2+: 最细粒度的社区 → Community (基层社区)
+
+    摘要生成策略（自底向上）：
+    - Community 摘要：基于原始实体关系，用 LLM 生成
+    - Episodic 摘要：基于下属 Community 的摘要，用 LLM 综合生成
+    - Saga 摘要：基于下属 Episodic 的摘要，用 LLM 综合生成
     """
 
     def __init__(self, *args, max_cluster_size: int = 5, llm=None, **kwargs):
@@ -29,9 +38,7 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         self.llm = llm or Settings.llm
         self.entity_info: Dict[str, List[int]] = {}
         self.community_summary: Dict[int, str] = {}
-
-        # 使用父类的 driver，无需重新创建
-        # 父类已经创建了 self._driver
+        self.cluster_hierarchy: Dict[int, List[int]] = {}  # parent_cluster_id -> [child_cluster_ids]
 
     def _create_nx_graph(self) -> nx.Graph:
         """
@@ -42,7 +49,6 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         nx_graph = nx.Graph()
 
         with self._driver.session() as session:
-            # 获取所有实体间关系（排除 MENTIONS 和 Chunk 相关）
             result = session.run("""
             MATCH (s)-[r]->(t)
             WHERE NOT type(r) = 'MENTIONS'
@@ -54,20 +60,28 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 t.name as target_name,
                 t.entity_type as target_type,
                 type(r) as relationship,
-                r.description as description
+                r.relation_name as relation_name,
+                r.source as source
             """)
 
             for record in result:
                 source = record["source_name"]
                 target = record["target_name"]
                 rel_type = record["relationship"]
-                description = record.get("description", "")
+                relation_name = record.get("relation_name", rel_type)
+                rel_source = record.get("source", "")
 
-                # 添加节点
+                description_parts = []
+                if relation_name and relation_name != rel_type:
+                    description_parts.append(f"{source} {relation_name} {target}")
+                else:
+                    description_parts.append(f"{source} {rel_type} {target}")
+                if rel_source:
+                    description_parts.append(f"（来源：{rel_source}）")
+                description = " ".join(description_parts)
+
                 nx_graph.add_node(source, entity_type=record["source_type"])
                 nx_graph.add_node(target, entity_type=record["target_type"])
-
-                # 添加边
                 nx_graph.add_edge(
                     source,
                     target,
@@ -80,42 +94,39 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
 
     def build_communities(self, levels: int = 3) -> None:
         """
-        构建社区层次结构并生成摘要
+        构建社区层次结构并生成摘要（自底向上）
 
         Args:
-            levels: 层次结构层级数 (默认 3 层：Community -> Episodic -> Saga)
+            levels: 层次结构层级数 (默认 3 层：Saga -> Episodic -> Community)
         """
         print("开始构建社区层次结构...")
 
-        # 1. 创建 NetworkX 图
         nx_graph = self._create_nx_graph()
 
-        # 2. 应用 hierarchical_leiden 算法
         print("运行 Leiden 社区检测算法...")
         clusters = hierarchical_leiden(
             nx_graph,
             max_cluster_size=self.max_cluster_size
         )
 
-        # 3. 收集社区信息
         print("收集社区信息...")
-        self.entity_info, community_info = self._collect_community_info(
+        entity_info, community_relations, cluster_info = self._collect_community_info(
             nx_graph, clusters
         )
+        self.entity_info = entity_info
 
-        # 4. 按层次分组社区
-        print("构建社区层次结构...")
-        hierarchical_communities = self._group_communities_by_level(
-            community_info, levels
-        )
+        print("构建社区层次映射...")
+        hierarchy = self._build_cluster_hierarchy(cluster_info)
 
-        # 5. 生成社区摘要
-        print("生成社区摘要...")
-        self._summarize_communities(hierarchical_communities)
+        print(f"  层次结构：{len(hierarchy)} 个层级")
+        for level, clusters_data in hierarchy.items():
+            print(f"    Level {level}: {len(clusters_data)} 个社区")
 
-        # 6. 将社区层次结构写入 Neo4j
+        print("生成社区摘要（自底向上）...")
+        self._summarize_communities_bottom_up(hierarchy, community_relations)
+
         print("将社区写入 Neo4j...")
-        self._write_communities_to_neo4j(hierarchical_communities)
+        self._write_communities_to_neo4j(hierarchy)
 
         print("社区构建完成!")
 
@@ -123,25 +134,48 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         self,
         nx_graph: nx.Graph,
         clusters
-    ) -> tuple[Dict, Dict]:
+    ) -> Tuple[Dict, Dict, Dict]:
         """
         收集每个社区的信息
 
         Returns:
-            entity_info: Dict[entity_name, List[cluster_id]]
-            community_info: Dict[cluster_id, List[relationship_details]]
+            entity_info: Dict[entity_name, Set[cluster_id]]
+            community_relations: Dict[cluster_id, List[relationship_details]]
+            cluster_info: Dict[cluster_id, {'level': int, 'parent': Optional[int], 'children': List[int]}]
         """
         entity_info = defaultdict(set)
-        community_info = defaultdict(list)
+        community_relations = defaultdict(list)
+        cluster_info = {}
 
         for item in clusters:
             node = item.node
             cluster_id = item.cluster
+            level = item.level
+            parent = item.parent_cluster if hasattr(item, 'parent_cluster') else None
 
-            # 记录实体所属的社区
             entity_info[node].add(cluster_id)
 
-            # 收集社区内的关系详情
+            if cluster_id not in cluster_info:
+                cluster_info[cluster_id] = {
+                    'level': level,
+                    'parent': parent,
+                    'children': []
+                }
+            else:
+                cluster_info[cluster_id]['level'] = level
+                cluster_info[cluster_id]['parent'] = parent
+
+            if parent is not None:
+                if parent not in cluster_info:
+                    cluster_info[parent] = {
+                        'level': level - 1 if level > 0 else 0,
+                        'parent': None,
+                        'children': [cluster_id]
+                    }
+                else:
+                    if cluster_id not in cluster_info[parent]['children']:
+                        cluster_info[parent]['children'].append(cluster_id)
+
             for neighbor in nx_graph.neighbors(node):
                 edge_data = nx_graph.get_edge_data(node, neighbor)
                 if edge_data:
@@ -150,53 +184,125 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                         f"{edge_data['relationship']} -> "
                         f"{edge_data.get('description', '')}"
                     )
-                    community_info[cluster_id].append(detail)
+                    if cluster_id not in community_relations:
+                        community_relations[cluster_id] = []
+                    community_relations[cluster_id].append(detail)
 
-        # 转换集合为列表
-        entity_info = {k: list(v) for k, v in entity_info.items()}
+        return dict(entity_info), dict(community_relations), dict(cluster_info)
 
-        return dict(entity_info), dict(community_info)
-
-    def _group_communities_by_level(
+    def _build_cluster_hierarchy(
         self,
-        community_info: Dict,
-        levels: int
-    ) -> Dict[str, Dict]:
+        cluster_info: Dict
+    ) -> Dict[int, Dict]:
         """
-        将社区按层次分组
+        构建社区层次结构
 
-        基于社区 ID 的层次结构：
-        - Level 0 (Community): 基础社区
-        - Level 1 (Episodic): 多个 Community 组成的主题社区
-        - Level 2 (Saga): 多个 Episodic 组成的大型叙事社区
+        hierarchical_leiden 的输出：
+        - Level 0: 最粗糙的划分（最大的社区）→ Saga
+        - Level 1+: 逐级细分 → Episodic → Community
+
+        我们映射到：
+        - Level 0 → Saga
+        - Level 1 → Episodic
+        - Level 2+ → Community
         """
-        # 按社区大小排序
-        sorted_communities = sorted(
-            community_info.items(),
-            key=lambda x: len(x[1]),
-            reverse=True
-        )
+        hierarchy = defaultdict(dict)
 
-        hierarchical = {
-            "Community": {},
-            "Episodic": {},
-            "Saga": {}
-        }
+        for cluster_id, info in cluster_info.items():
+            level = info['level']
 
-        # 简单地按社区大小分配层次
-        # 最大的社区可能是 Saga，中等的是 Episodic，小的是 Community
-        for i, (cluster_id, details) in enumerate(sorted_communities):
-            if i < len(sorted_communities) // 10:  # 前 10% 为 Saga
-                hierarchical["Saga"][cluster_id] = details
-            elif i < len(sorted_communities) // 3:  # 前 10%-33% 为 Episodic
-                hierarchical["Episodic"][cluster_id] = details
-            else:  # 其余为 Community
-                hierarchical["Community"][cluster_id] = details
+            if level == 0:
+                hierarchy[0][cluster_id] = {
+                    'type': 'Saga',
+                    'parent': None,
+                    'children': info['children'],
+                    'level': level
+                }
+            elif level == 1:
+                hierarchy[1][cluster_id] = {
+                    'type': 'Episodic',
+                    'parent': info['parent'],
+                    'children': info['children'],
+                    'level': level
+                }
+            else:
+                hierarchy[level][cluster_id] = {
+                    'type': 'Community',
+                    'parent': info['parent'],
+                    'children': [],
+                    'level': level
+                }
 
-        return hierarchical
+        return dict(hierarchy)
 
-    def generate_community_summary(self, text: str) -> str:
-        """使用 LLM 生成社区摘要"""
+    def _generate_summary_from_relations(self, relations: List[str]) -> str:
+        """基于原始关系生成摘要"""
+        if not relations:
+            return ""
+
+        details_text = "\n".join(relations)
+
+        if len(relations) > 50:
+            batch_size = 50
+            batches = [relations[i:i+batch_size] for i in range(0, len(relations), batch_size)]
+            summaries = []
+            for batch in batches:
+                batch_text = "\n".join(batch)
+                try:
+                    summary = self._call_llm_for_summary(batch_text)
+                    summaries.append(summary)
+                except Exception as e:
+                    logger.warning(f"生成摘要失败：{e}")
+                    summaries.append(batch_text)
+            return "\n\n".join(summaries)
+        else:
+            try:
+                return self._call_llm_for_summary(details_text)
+            except Exception as e:
+                logger.warning(f"生成摘要失败：{e}")
+                return details_text
+
+    def _generate_summary_from_child_summaries(
+        self,
+        child_summaries: List[str],
+        level_name: str
+    ) -> str:
+        """基于子社区摘要生成父社区摘要"""
+        if not child_summaries:
+            return ""
+
+        summaries_text = "\n\n---\n\n".join(child_summaries)
+
+        prompt = f"""你是一位地质知识图谱分析师。以下是{level_name}下属多个子社区的摘要：
+
+{summaries_text}
+
+请将上述子社区摘要综合为一个连贯的{level_name}摘要。要求：
+1. 识别并提炼核心主题和模式
+2. 突出该{level_name}的独特地质特征
+3. 保持摘要简洁（300 字以内）
+4. 使用中文
+
+{level_name}摘要："""
+
+        messages = [
+            ChatMessage(
+                role="system",
+                content="你是一位地质知识图谱专家，擅长综合多个相关摘要生成更高层次的连贯摘要。"
+            ),
+            ChatMessage(role="user", content=prompt),
+        ]
+
+        try:
+            response = self.llm.chat(messages)
+            clean_response = re.sub(r"^assistant:\s*", "", str(response)).strip()
+            return clean_response
+        except Exception as e:
+            logger.warning(f"生成{level_name}摘要失败：{e}")
+            return summaries_text[:2000]
+
+    def _call_llm_for_summary(self, text: str) -> str:
+        """调用 LLM 生成摘要的底层方法"""
         messages = [
             ChatMessage(
                 role="system",
@@ -216,121 +322,153 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         clean_response = re.sub(r"^assistant:\s*", "", str(response)).strip()
         return clean_response
 
-    def _summarize_communities(self, hierarchical_communities: Dict) -> None:
-        """为每个社区生成摘要"""
-        for level, communities in hierarchical_communities.items():
-            print(f"  生成 {level} 层级的摘要...")
-            for community_id, details in communities.items():
-                if len(details) == 0:
-                    continue
+    def _summarize_communities_bottom_up(
+        self,
+        hierarchy: Dict[int, Dict],
+        community_relations: Dict[int, List[str]]
+    ) -> None:
+        """
+        自底向上生成社区摘要
 
-                details_text = "\n".join(details) + "."
+        顺序：
+        1. 先为所有 Community（最细层，level 最高）生成摘要
+        2. 再为 Episodic 生成摘要（基于下属 Community 摘要）
+        3. 最后为 Saga 生成摘要（基于下属 Episodic 摘要）
+        """
+        levels = sorted(hierarchy.keys(), reverse=True)
 
-                # 限制输入长度，避免超出 token 限制
-                if len(details_text) > 4000:
-                    details_text = details_text[:4000] + "..."
+        for level in levels:
+            clusters = hierarchy[level]
+            cluster_type = list(clusters.values())[0]['type'] if clusters else 'Unknown'
+            print(f"  生成 {cluster_type} 层级的摘要 (Level {level})...")
 
-                self.community_summary[community_id] = self.generate_community_summary(
-                    details_text
-                )
+            for cluster_id, cluster_data in clusters.items():
+                if cluster_data['type'] == 'Community':
+                    relations = community_relations.get(cluster_id, [])
+                    if relations:
+                        self.community_summary[cluster_id] = self._generate_summary_from_relations(relations)
+                    else:
+                        self.community_summary[cluster_id] = ""
 
-    def _write_communities_to_neo4j(self, hierarchical_communities: Dict) -> None:
+                elif cluster_data['type'] == 'Episodic':
+                    child_summaries = [
+                        self.community_summary[child_id]
+                        for child_id in cluster_data['children']
+                        if child_id in self.community_summary and self.community_summary[child_id]
+                    ]
+                    if child_summaries:
+                        self.community_summary[cluster_id] = self._generate_summary_from_child_summaries(
+                            child_summaries, "Episodic"
+                        )
+                    else:
+                        relations = community_relations.get(cluster_id, [])
+                        self.community_summary[cluster_id] = self._generate_summary_from_relations(relations) if relations else ""
+
+                elif cluster_data['type'] == 'Saga':
+                    child_summaries = [
+                        self.community_summary[child_id]
+                        for child_id in cluster_data['children']
+                        if child_id in self.community_summary and self.community_summary[child_id]
+                    ]
+                    if child_summaries:
+                        self.community_summary[cluster_id] = self._generate_summary_from_child_summaries(
+                            child_summaries, "Saga"
+                        )
+                    else:
+                        relations = community_relations.get(cluster_id, [])
+                        self.community_summary[cluster_id] = self._generate_summary_from_relations(relations) if relations else ""
+
+    def _write_communities_to_neo4j(self, hierarchy: Dict[int, Dict]) -> None:
         """
         将社区层次结构写入 Neo4j
-
-        创建以下结构：
-        - (:Saga)-[:HAS_EPISODIC]->(:Episodic)-[:HAS_MEMBER]->(:Community)
-        - (:Community)-[:HAS_MEMBER]->(:Entity)
         """
         with self._driver.session() as session:
-            # 1. 清理现有的社区节点
             print("  清理现有社区数据...")
             session.run("MATCH (c:Saga) DETACH DELETE c")
             session.run("MATCH (c:Episodic) DETACH DELETE c")
             session.run("MATCH (c:Community) DETACH DELETE c")
 
-            # 2. 创建社区节点并建立关系
             saga_count = 0
             episodic_count = 0
             community_count = 0
 
-            # 创建 Saga 节点
+            saga_ids = []
+            episodic_ids = []
+            community_ids = []
+
             print("  创建 Saga 节点...")
-            saga_ids = list(hierarchical_communities["Saga"].keys())
-            for saga_id in saga_ids:
-                summary = self.community_summary.get(saga_id, "")[:2000]
-                session.run("""
-                CREATE (s:Saga {
-                    saga_id: $saga_id,
-                    name: 'Saga_' + toString($saga_id),
-                    summary: $summary,
-                    level: 2,
-                    created_at: datetime()
-                })
-                """, saga_id=saga_id, summary=summary)
-                saga_count += 1
+            if 0 in hierarchy:
+                for saga_id, saga_data in hierarchy[0].items():
+                    summary = self.community_summary.get(saga_id, "")[:2000]
+                    session.run("""
+                    CREATE (s:Saga {
+                        saga_id: $saga_id,
+                        name: 'Saga_' + toString($saga_id),
+                        summary: $summary,
+                        level: 0,
+                        created_at: datetime()
+                    })
+                    """, saga_id=saga_id, summary=summary)
+                    saga_ids.append(saga_id)
+                    saga_count += 1
 
-            # 创建 Episodic 节点
             print("  创建 Episodic 节点...")
-            episodic_ids = list(hierarchical_communities["Episodic"].keys())
-            for episodic_id in episodic_ids:
-                summary = self.community_summary.get(episodic_id, "")[:2000]
-                session.run("""
-                CREATE (e:Episodic {
-                    episodic_id: $episodic_id,
-                    name: 'Episodic_' + toString($episodic_id),
-                    summary: $summary,
-                    level: 1,
-                    created_at: datetime()
-                })
-                """, episodic_id=episodic_id, summary=summary)
-                episodic_count += 1
+            if 1 in hierarchy:
+                for episodic_id, episodic_data in hierarchy[1].items():
+                    summary = self.community_summary.get(episodic_id, "")[:2000]
+                    session.run("""
+                    CREATE (e:Episodic {
+                        episodic_id: $episodic_id,
+                        name: 'Episodic_' + toString($episodic_id),
+                        summary: $summary,
+                        level: 1,
+                        created_at: datetime()
+                    })
+                    """, episodic_id=episodic_id, summary=summary)
+                    episodic_ids.append(episodic_id)
+                    episodic_count += 1
 
-            # 创建 Community 节点
             print("  创建 Community 节点...")
-            community_ids = list(hierarchical_communities["Community"].keys())
-            for community_id in community_ids:
-                details = hierarchical_communities["Community"][community_id]
-                summary = self.community_summary.get(community_id, "")[:2000]
+            if 2 in hierarchy:
+                for community_id, community_data in hierarchy[2].items():
+                    summary = self.community_summary.get(community_id, "")[:2000]
+                    session.run("""
+                    CREATE (c:Community {
+                        community_id: $community_id,
+                        name: 'Community_' + toString($community_id),
+                        summary: $summary,
+                        member_count: $member_count,
+                        level: 2,
+                        created_at: datetime()
+                    })
+                    """, community_id=community_id,
+                        summary=summary,
+                        member_count=community_data.get('member_count', 0))
+                    community_ids.append(community_id)
+                    community_count += 1
 
-                session.run("""
-                CREATE (c:Community {
-                    community_id: $community_id,
-                    name: 'Community_' + toString($community_id),
-                    summary: $summary,
-                    member_count: $member_count,
-                    level: 0,
-                    created_at: datetime()
-                })
-                """, community_id=community_id,
-                    summary=summary,
-                    member_count=len(details))
-                community_count += 1
-
-            # 3. 建立层次关系
             print("  建立社区层次关系...")
 
-            # Saga -> Episodic (简单按 ID 关联，实际应该更复杂的逻辑)
             if saga_ids and episodic_ids:
-                for i, episodic_id in enumerate(episodic_ids):
-                    saga_id = saga_ids[i % len(saga_ids)]
-                    session.run("""
-                    MATCH (s:Saga {saga_id: $saga_id})
-                    MATCH (e:Episodic {episodic_id: $episodic_id})
-                    MERGE (s)-[:HAS_EPISODIC]->(e)
-                    """, saga_id=saga_id, episodic_id=episodic_id)
+                for episodic_id, episodic_data in hierarchy.get(1, {}).items():
+                    parent_id = episodic_data.get('parent')
+                    if parent_id and parent_id in saga_ids:
+                        session.run("""
+                        MATCH (s:Saga {saga_id: $saga_id})
+                        MATCH (e:Episodic {episodic_id: $episodic_id})
+                        MERGE (s)-[:HAS_EPISODIC]->(e)
+                        """, saga_id=parent_id, episodic_id=episodic_id)
 
-            # Episodic -> Community
             if episodic_ids and community_ids:
-                for i, community_id in enumerate(community_ids):
-                    episodic_id = episodic_ids[i % len(episodic_ids)]
-                    session.run("""
-                    MATCH (e:Episodic {episodic_id: $episodic_id})
-                    MATCH (c:Community {community_id: $community_id})
-                    MERGE (e)-[:HAS_MEMBER]->(c)
-                    """, episodic_id=episodic_id, community_id=community_id)
+                for community_id, community_data in hierarchy.get(2, {}).items():
+                    parent_id = community_data.get('parent')
+                    if parent_id and parent_id in episodic_ids:
+                        session.run("""
+                        MATCH (e:Episodic {episodic_id: $episodic_id})
+                        MATCH (c:Community {community_id: $community_id})
+                        MERGE (e)-[:HAS_MEMBER]->(c)
+                        """, episodic_id=parent_id, community_id=community_id)
 
-            # 4. 创建 Community -> Entity 关系
             print("  建立 Community -> Entity 关系...")
             entity_count = 0
             for entity_name, cluster_ids in self.entity_info.items():
@@ -349,8 +487,6 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
 
     def get_community_summaries(self) -> Dict[int, str]:
         """获取社区摘要"""
-        if not self.community_summary:
-            self.build_communities()
         return self.community_summary
 
     def close(self) -> None:

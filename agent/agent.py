@@ -29,13 +29,17 @@ load_dotenv()
 # Import tools
 from agent.tools import (
     kg_query,
+    kg_community_summary,
     web_search,
     file_read,
     file_write,
     python_exec,
     shell_exec,
     peace_map_analyze,
-)
+    peace_rock_knowledge,
+    vision_analyze,
+    calculate_spatial_relationships,
+)   
 from agent.config import AgentConfig
 
 
@@ -82,37 +86,29 @@ def create_agent(
     # Define available tools
     tools = [
         FunctionTool.from_defaults(fn=kg_query, name="kg_query", description="Query the geological knowledge graph for information about mineral deposits, formations, faults, and metallogenic conditions"),
+        FunctionTool.from_defaults(fn=kg_community_summary, name="kg_community_summary", description="Query macro-level GraphRAG community summaries for a geological entity"),
         FunctionTool.from_defaults(fn=web_search, name="web_search", description="Search the web for current information and latest research"),
         FunctionTool.from_defaults(fn=file_read, name="file_read", description="Read content from files"),
         FunctionTool.from_defaults(fn=file_write, name="file_write", description="Write content to files"),
         FunctionTool.from_defaults(fn=python_exec, name="python_exec", description="Execute Python code for calculations and data analysis"),
         FunctionTool.from_defaults(fn=shell_exec, name="shell_exec", description="Execute shell commands"),
-        FunctionTool.from_defaults(fn=peace_map_analyze, name="peace_map_analyze", description="Analyze geological map images using PEACE module to extract metadata, legends, rock types, and stratigraphic information"),
+        FunctionTool.from_defaults(fn=peace_map_analyze, name="peace_map_analyze", description="Analyze geological map images using PEACE module to extract metadata, layouts, and legends. Use query='layout', 'legend', 'info', or 'full'"),
+        FunctionTool.from_defaults(fn=peace_rock_knowledge, name="peace_rock_knowledge", description="Get domain knowledge (type, age) for a specific rock/stratigraphic unit from local knowledge base"),
+        FunctionTool.from_defaults(fn=vision_analyze, name="vision_analyze", description="Analyze geological map images to extract spatial features (faults, minerals)"),
+        FunctionTool.from_defaults(fn=calculate_spatial_relationships, name="calculate_spatial_relationships", description="Calculate spatial relationships (e.g. distances) between minerals and faults given the JSON output from vision_analyze"),
     ]
-
-    # Try to import vision tool if available
-    try:
-        from agent.tools.vision_tool import vision_analyze
-        tools.append(FunctionTool.from_defaults(
-            fn=vision_analyze,
-            name="vision_analyze",
-            description="Analyze geological map images to extract structural information, fault lines, and mineral deposit locations"
-        ))
-        print("Vision tool loaded successfully")
-    except ImportError:
-        print("Vision tool not available (vision_process not integrated yet)")
 
     # Configure memory with ChatMemoryBuffer for context management
     memory = ChatMemoryBuffer.from_defaults(token_limit=token_limit)
 
     # Create ReAct Agent
-    agent = ReActAgent.from_tools(
+    agent = ReActAgent(
         tools=tools,
         llm=llm,
         memory=memory,
         verbose=verbose,
         max_iterations=max_iterations,
-        context_prompt=AgentConfig.CONTEXT_PROMPT,
+        context=AgentConfig.CONTEXT_PROMPT,
     )
 
     return agent
@@ -141,12 +137,15 @@ async def run_agent_interactive(agent: ReActAgent) -> None:
     print("=" * 60)
     print("Available tools:")
     print("  - kg_query: Query geological knowledge graph")
+    print("  - kg_community_summary: Query GraphRAG community summaries")
     print("  - web_search: Search the web")
     print("  - file_read/file_write: File operations")
     print("  - python_exec: Run Python code")
     print("  - shell_exec: Run shell commands")
-    print("  - vision_analyze: Analyze geological maps (if available)")
-    print("  - peace_map_analyze: PEACE geological map analysis")
+    print("  - vision_analyze: Analyze spatial features of geological maps")
+    print("  - calculate_spatial_relationships: Calculate spatial relationships")
+    print("  - peace_map_analyze: PEACE geological map extraction")
+    print("  - peace_rock_knowledge: PEACE local domain knowledge")
     print("=" * 60)
     print("Type 'exit' or press Ctrl+C to quit\n")
 
