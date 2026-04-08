@@ -23,6 +23,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 from agent.agent import create_agent  # noqa: E402
 from agent.config import AgentConfig  # noqa: E402
+from agent.tools.kg_tool import kg_query_with_graph  # noqa: E402
 
 # Paths & constants
 LOGS_DIR = PROJECT_ROOT / "logs"
@@ -129,6 +130,93 @@ def make_json_safe(value: Any) -> Any:
 def format_message_timestamp() -> str:
     """Format current timestamp for display in chat messages."""
     return datetime.now().strftime("%Y/%m/%d %H:%M")
+
+
+def render_kg_graph(graph_data: dict) -> None:
+    """
+    Render knowledge graph visualization using AntV G6.
+
+    Args:
+        graph_data: dict with 'nodes' and 'edges' arrays
+    """
+    if not graph_data.get("nodes") or not graph_data.get("edges"):
+        return
+
+    # Node color mapping by type
+    type_colors = {
+        "Mineral": "#ff6b6b",
+        "Formation": "#4ecdc4",
+        "Fault": "#45b7d1",
+        "Rock": "#96ceb4",
+        "Community": "#ffeaa7",
+        "Entity": "#dfe6e9",
+    }
+
+    html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>知识图谱可视化</title>
+    <script src="https://gw.alipayobjects.com/os/lib/antv/g6/4.8.24/dist/g6.min.js"></script>
+    <style>
+        #container {{
+            width: 100%;
+            height: 350px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            background: #fafafa;
+        }}
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <script>
+        const data = {json.dumps(graph_data, ensure_ascii=False)};
+        const typeColors = {json.dumps(type_colors)};
+
+        data.nodes.forEach(node => {{
+            node.color = typeColors[node.type] || '#95a5a6';
+            node.size = 35;
+        }});
+
+        data.edges.forEach(edge => {{
+            edge.type = 'line';
+            edge.style = {{ stroke: '#bdc3c7', lineWidth: 2 }};
+            edge.label = edge.type;
+            edge.labelCfg = {{ style: {{ fontSize: 10, fill: '#7f8c8d' }} }};
+        }});
+
+        const graph = new G6.Graph({{
+            container: 'container',
+            width: document.getElementById('container').clientWidth,
+            height: 350,
+            modes: {{ default: ['drag-canvas', 'zoom-canvas', 'drag-node'] }},
+            layout: {{
+                type: 'force',
+                preventOverlap: true,
+                linkDistance: 100,
+                nodeStrength: -50,
+                edgeStrength: 0.3,
+            }},
+            defaultNode: {{
+                type: 'circle',
+                style: {{ lineWidth: 2, stroke: '#2c3e50' }},
+            }},
+            defaultEdge: {{
+                type: 'line',
+                style: {{ stroke: '#bdc3c7', lineWidth: 1.5 }},
+            }},
+        }});
+
+        graph.data(data);
+        graph.render();
+        graph.fitView();
+    </script>
+</body>
+</html>
+"""
+    st.components.v1.html(html_content, height=380, scrolling=False)
 
 
 def get_serializable_messages() -> List[dict]:
@@ -472,5 +560,25 @@ if prompt := st.chat_input("输入地质问题，或引用上传的图片路径.
         if response:
             response_text = ensure_text_content(response)
             st.markdown(response_text)
+
+            # 检测是否是地质报告相关问题，如果是则显示知识图谱可视化
+            kg_keywords = ["地质报告", "知识图谱", "断层", "矿点", "岩层", "地层", "矿床", "成矿", "构造"]
+            is_geo_report_query = any(kw in prompt for kw in kg_keywords)
+
+            if is_geo_report_query:
+                with st.spinner("正在加载知识图谱..."):
+                    try:
+                        # 从 prompt 中提取查询关键词
+                        graph_data = kg_query_with_graph(prompt[:50], limit=15)
+                        if graph_data.get("nodes") and graph_data.get("edges"):
+                            st.markdown("### 📊 知识图谱可视化")
+                            render_kg_graph(graph_data)
+                            with st.expander("查看图谱数据"):
+                                st.json(graph_data)
+                        else:
+                            st.info("暂无可用的知识图谱数据")
+                    except Exception as e:
+                        st.warning(f"知识图谱加载失败：{str(e)}")
+
             st.session_state.messages.append({"role": "assistant", "type": "text", "content": response_text, "timestamp": format_message_timestamp()})
             persist_messages_to_disk()

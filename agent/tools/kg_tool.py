@@ -147,6 +147,89 @@ class KGQueryTool:
         except Exception as e:
             return f"Error: {str(e)}"
 
+    def query_with_graph_data(self, query_text: str, limit: int = 20) -> dict:
+        """
+        Query the knowledge graph and return structured graph data for visualization.
+
+        Args:
+            query_text: Natural language query
+            limit: Maximum number of nodes and relationships to return
+
+        Returns:
+            dict with 'nodes' and 'edges' arrays for graph visualization
+        """
+        if not self._initialized:
+            self._initialize()
+        if not self._driver:
+            return {"nodes": [], "edges": [], "error": "Neo4j driver not initialized"}
+
+        try:
+            with self._driver.session() as session:
+                nodes = {}
+                edges = []
+
+                # Query entities and relationships
+                cypher = """
+                MATCH (n)
+                WHERE n.name CONTAINS $q OR
+                      (n.description IS NOT NULL AND n.description CONTAINS $q) OR
+                      (n.type IS NOT NULL AND n.type CONTAINS $q)
+                OPTIONAL MATCH (n)-[r]->(m)
+                WHERE r IS NOT NULL
+                RETURN n, r, m
+                LIMIT $limit
+                """
+                result = session.run(cypher, q=query_text, limit=limit)
+
+                node_id = 0
+                node_id_map = {}
+
+                for record in result:
+                    # Process source node
+                    n = record.get('n')
+                    if n and n.id not in node_id_map:
+                        labels = [l for l in list(n.labels) if not l.startswith('__')]
+                        node_type = labels[0] if labels else 'Entity'
+                        nodes[n.id] = {
+                            "id": n.id,
+                            "name": n.get('name', 'Unknown'),
+                            "type": node_type,
+                            "description": n.get('description', '')[:100] if n.get('description') else '',
+                        }
+                        node_id_map[n.id] = node_id
+                        node_id += 1
+
+                    # Process target node
+                    m = record.get('m')
+                    if m and m.id not in node_id_map:
+                        labels = [l for l in list(m.labels) if not l.startswith('__')]
+                        node_type = labels[0] if labels else 'Entity'
+                        nodes[m.id] = {
+                            "id": m.id,
+                            "name": m.get('name', 'Unknown'),
+                            "type": node_type,
+                            "description": m.get('description', '')[:100] if m.get('description') else '',
+                        }
+                        node_id_map[m.id] = node_id
+                        node_id += 1
+
+                    # Process relationship
+                    r = record.get('r')
+                    if r and n and m:
+                        edges.append({
+                            "source": node_id_map[n.id],
+                            "target": node_id_map[m.id],
+                            "type": r.type,
+                        })
+
+                return {
+                    "nodes": list(nodes.values()),
+                    "edges": edges,
+                }
+
+        except Exception as e:
+            return {"nodes": [], "edges": [], "error": str(e)}
+
     def query_community_summary(self, entity_name: str) -> str:
         """
         Query GraphRAG community summaries for a specific geological entity.
@@ -263,3 +346,20 @@ def kg_community_summary(entity_name: str) -> str:
         Community summary context
     """
     return get_kg_tool().query_community_summary(entity_name)
+
+
+def kg_query_with_graph(query: str, limit: int = 20) -> dict:
+    """
+    Query the geological knowledge graph and return graph data for visualization.
+
+    This tool returns structured graph data (nodes and edges) that can be
+    visualized using graph visualization libraries like AntV G6.
+
+    Args:
+        query: Natural language query about geological knowledge
+        limit: Maximum number of nodes to return (default: 20)
+
+    Returns:
+        dict with 'nodes' and 'edges' arrays for visualization
+    """
+    return get_kg_tool().query_with_graph_data(query, limit)
